@@ -1,61 +1,114 @@
 # -*- coding: utf-8 -*-
-  
+
 """
 July 10, 2016
- 
+
 @author: Ryan Reede
 
 Python based music information extraction and mix-down generation
- 
+
 """
- 
+
 import tkinter as tk
 from tkinter.filedialog import askopenfilename
 import matplotlib.mlab as mlab
 import scipy.io.wavfile as wav
-
-import numpy as np
 import scipy.signal as sig
-from os import listdir
-from os.path import isfile, join
+
 
 class Process():
- 
+
     def __init__(self):
         self.pl = []
-        # self.playlist = {}
 
     def generate(self, fileList, inputParam1, inputParam2, inputParam3, inputParam4):
+        songIndex = 0
         for path in fileList: # add Music objects to pl (playlist). Pass in filename, full  L/R data, and mean-ed data
-            self.pl.append(Music(path.split("/")[-1], wav.read(path)[1], wav.read(path)[1].mean(axis=1)))
 
-        print(self.pl[1].title)
-        print(self.pl[1].data)
-        print(self.pl[1].avgData)
-        print(inputParam1, inputParam2, inputParam3, inputParam4)
+            tolerance = ((100 - inputParam1)/2) * .01 # percentage to keep on front/back
+            title = path.split("/")[-1]
+            fullSongData = wav.read(path)[1]
+            fullSongAvgData =  wav.read(path)[1].mean(axis=1)
+
+            length = len(fullSongData)
+            beginningData = fullSongData[:tolerance*length]   # array[start:], array[:stop],
+            beginningAvgData = fullSongAvgData[:tolerance*length]
+            endData = fullSongData[length - (length*tolerance):]
+            endAvgData = fullSongAvgData[length - (length*tolerance):]
+
+            self.pl.append(Music(title, beginningData, beginningAvgData, endData, endAvgData, songIndex))
+            songIndex += 1
+            # self.pl.append(Music(path.split("/")[-1], wav.read(path)[1], wav.read(path)[1].mean(axis=1)  ))
+            # self.pl.append(Music(title, beginningData, beginningAvgData, endData, endAvgData))
+        print("\ncorrelating...\n\n")
+        self.correlate()
+
+
+    def correlate(self):
+        numSongs = len(self.pl)
+        for song in self.pl:
+            myIndex = song.index
+            for i in range(numSongs):
+                if (i == myIndex):
+                    continue
+                else:
+                    # fill out its beginning compMap:
+                    print("\n*** CORRELATING song " + str(myIndex) + " (BEGINNING) and song " + str(i) + " (END)"  )
+                    print(song.specs[0].stft.shape)
+                    print(self.pl[i].specs[1].stft.shape) # correlate using the fftconvolve function, not correlate2d (faster but must reverse 2nd input)
+                    beginningCorr = sig.fftconvolve(song.specs[0].stft,  self.pl[i].specs[1].stft[::-1, ::-1]) #[0] = beg, [1] = end
+                    song.beginningCompatibilityMap[i] = beginningCorr
+                    print(beginningCorr)
+
+                    # fill out its end compMap:
+                    print("\n*** CORRELATING song " + str(myIndex) + " (END) and song " + str(i)   +  " (BEGINNING)"  )
+                    endCorr = sig.fftconvolve(song.specs[1].stft, self.pl[i].specs[0].stft[::-1, ::-1]) # .. DEFAULTS: mode='full', boundary='fill', fillvalue=0
+                    song.endCompatibilityMap[i] = endCorr
+                    print(endCorr)
+
+                    # print("\n\nsong.beginningAvgData (SPECS): \n")
+                    # print(song.specs[0].stft)
+                    # print("LENGTH: " + str(len(song.specs[0].stft)) + "\n")
+                    # print("\n\nself.pl[i].endAvgData (SPECS): \n")
+                    # print(self.pl[i].specs[1].stft)
+                    # print("LENGTH: " + str(len(self.pl[i].specs[1].stft)) + "\n")
+
 
 
 class Music():
-    def __init__(self, title, data, avgData):
+    def __init__(self, title, bData, bAvgData, eData, eAvgData, index):
+
+        self.index = index
         self.title = title
-        self.data = data
-        self.avgData = avgData
-        stft, freq, time = mlab.specgram(self.avgData, NFFT=256, Fs=44100,\
-                    detrend=mlab.detrend_none,  window=mlab.window_hanning,\
-                    noverlap=128,  pad_to=None, sides='default',\
-                    scale_by_freq=None, mode='default')
-        self.spect = Spectogram(stft, freq, time)
-        # Map to store score the ranking of a transition with each other song, FRONT and BACK
-        # example: self.fadeInCompatibilityMap[song2] = value
-        self.fadeInCompatibilityMap = {}
-        self.fadeOutCompatibilityMap = {}
 
-        print("\n\nstft:\n", stft,"\n\nfreq\n", freq, "\n\ntime\n",  time)
-        print("STFT dimensions are: " + str(len(stft)) + " by " + str(len(stft[1])))
-        print("LENGTH OF freq: "+ str(len(freq)))
-        print("LENGTH OF time: "+ str(len(time)))
+        self.beginningData = bData # use latter
+        self.beginningAvgData = bAvgData
+        self.endData = eData # use later
+        self.endAvgData = eAvgData
 
+        averages = [self.beginningAvgData, self.endAvgData]
 
+        self.specs = [] # list of 2 spectograms. [0] = beginning of song, [1] = end of song
+
+        nfft = 1024  #subj to CHANGE
+
+        for a in averages:
+            stft, freq, time = mlab.specgram(a, NFFT=nfft, Fs=44100,\
+                        detrend=mlab.detrend_none,  window=mlab.window_hanning,\
+                        noverlap=128,  pad_to=None, sides='default',\
+                        scale_by_freq=None, mode='default')
+            spect = Spectogram(stft, freq, time)
+            self.specs.append(spect)
+
+        # Maps to store score the ranking of a transition with each other song, FRONT and BACK
+        # example: self.beginningCompatibilityMap[songN] = value
+        self.beginningCompatibilityMap = {}
+        self.endCompatibilityMap = {}
+
+        # print("\n\nstft:\n", stft,"\n\nfreq\n", freq, "\n\ntime\n",  time)
+        # print("STFT dimensions are: " + str(len(stft)) + " by " + str(len(stft[1])))
+        # print("LENGTH OF freq: "+ str(len(freq)))
+        # print("LENGTH OF time: "+ str(len(time)))
 
 
 class Spectogram():
@@ -64,17 +117,13 @@ class Spectogram():
         self.freq = freq
         self.time = time
 
-    # stft: [513x258 double]
-    # freq: [513x1 double]
-    # time: [1x258 double]
-
 class Controller():
 
     def __init__(self):
         self.root = tk.Tk()
         self.process = Process()
         self.view = View(self.root, self.process)
-  
+
     def run(self):
         self.root.title("Music Mixer Playlist")
         self.root.deiconify()
@@ -108,12 +157,12 @@ class View():
         self.button2.grid(row=2, column=0, sticky=tk.E)
 
 
-        self.labelText1 = tk.Label(self.frame2, text = 'Parameter 1: ')
+        self.labelText1 = tk.Label(self.frame2, text = 'Keep % of song: ')
         self.labelText1.grid(row=0, column=0, sticky=tk.W)
 
         self.text1 = tk.Text(self.frame2, height=1, width=3, background="grey")
         self.text1.grid(row=0, column=1, sticky=tk.E)
-        self.text1.insert(tk.END, "11")
+        self.text1.insert(tk.END, "50")
 
 
         self.labelText2 = tk.Label(self.frame2, text = 'Parameter 2: ')
@@ -168,8 +217,6 @@ class View():
 if __name__ == '__main__':
     c = Controller()
     c.run()
-
-
 
 
 
